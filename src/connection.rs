@@ -12,10 +12,13 @@ use crate::transport::websocket::connect;
 use dashmap::DashMap;
 use futures_util::future::{select, Either};
 use futures_util::{Sink, SinkExt};
+use protobuf::Message;
+use std::any::Any;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
+use steam_vent_proto::{JobMultiple, RpcMessage};
 use steamid_ng::SteamID;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::task::spawn;
@@ -28,10 +31,10 @@ type Result<T, E = NetworkError> = std::result::Result<T, E>;
 
 pub struct Connection {
     pub(crate) session: Session,
-    filter: MessageFilter,
+    pub filter: MessageFilter,
     rest: mpsc::Receiver<Result<RawNetMessage>>,
     write: Arc<Mutex<dyn Sink<RawNetMessage, Error = NetworkError> + Unpin + Send>>,
-    timeout: Duration,
+    pub timeout: Duration,
 }
 
 impl Connection {
@@ -149,11 +152,15 @@ impl Connection {
         self.session.steam_id
     }
 
-    fn prepare(&self) -> NetMessageHeader {
+    pub(crate) fn prepare(&self) -> NetMessageHeader {
         self.session.header()
     }
 
-    pub async fn send<Msg: NetMessage>(&self, header: NetMessageHeader, msg: Msg) -> Result<()> {
+    pub(crate) async fn send<Msg: NetMessage>(
+        &self,
+        header: NetMessageHeader,
+        msg: Msg,
+    ) -> Result<()> {
         let msg = RawNetMessage::from_message(header, msg)?;
         self.write.lock().await.send(msg).await?;
         Ok(())
@@ -220,8 +227,17 @@ impl Connection {
 }
 
 #[derive(Clone)]
-struct MessageFilter {
+pub struct MessageFilter {
     job_id_filters: Arc<DashMap<u64, oneshot::Sender<RawNetMessage>>>,
+    job_id_multi_filters: Arc<
+        DashMap<
+            u64,
+            (
+                broadcast::Sender<RawNetMessage>,
+                Box<dyn Fn(Box<dyn JobMultiple>) -> bool>,
+            ),
+        >,
+    >,
     notification_filters: Arc<DashMap<&'static str, broadcast::Sender<ServiceMethodNotification>>>,
     kind_filters: Arc<DashMap<EMsg, broadcast::Sender<RawNetMessage>>>,
     oneshot_kind_filters: Arc<DashMap<EMsg, oneshot::Sender<RawNetMessage>>>,
@@ -234,6 +250,7 @@ impl MessageFilter {
         let (rest_tx, rx) = mpsc::channel(16);
         let filter = MessageFilter {
             job_id_filters: Default::default(),
+            job_id_multi_filters: Default::default(),
             kind_filters: Default::default(),
             notification_filters: Default::default(),
             oneshot_kind_filters: Default::default(),
@@ -243,13 +260,18 @@ impl MessageFilter {
         spawn(async move {
             while let Some(res) = source.next().await {
                 if let Ok(message) = res {
-                    debug!(job_id = message.header.target_job_id, kind = ?message.kind, "processing message");
+                    debug!(job_id = message.header.target_job_id, kind = ?message.kind, message = ?message, "processing message");
                     if let Some((_, tx)) = filter_send
                         .job_id_filters
                         .remove(&message.header.target_job_id)
                     {
                         tx.send(message).ok();
-                    } else if let Some((_, tx)) =
+                    }
+                    else if let Some((_, map_ref)) = filter_send
+                        .job_id_multi_filters
+                        .entry(message.header.target_job_id)
+                    {
+                        tx.send(message).ok(); else if let Some((_, tx)) =
                         filter_send.oneshot_kind_filters.remove(&message.kind)
                     {
                         tx.send(message).ok();
@@ -285,6 +307,21 @@ impl MessageFilter {
         let (tx, rx) = oneshot::channel();
         self.job_id_filters.insert(id, tx);
         rx
+    }
+
+    pub fn on_job_id_multi(
+        &self,
+        id: u64,
+        completion_condition: fn(&dyn JobMultiple) -> bool,
+    ) -> broadcast::Receiver<RawNetMessage> {
+        let boxed_fn =
+            Box::new(move |message: Box<dyn JobMultiple>| completion_condition(message.as_ref()));
+
+        let map_ref = self
+            .job_id_multi_filters
+            .entry(id)
+            .or_insert_with(|| (broadcast::channel(16).0, boxed_fn));
+        map_ref.0.subscribe()
     }
 
     pub fn on_notification(

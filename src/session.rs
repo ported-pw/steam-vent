@@ -76,13 +76,19 @@ impl From<EResult> for LoginError {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct JobIdCounter(AtomicU64);
 
 impl JobIdCounter {
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self) -> u64 {
         self.0.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+impl Default for JobIdCounter {
+    fn default() -> Self {
+        Self(AtomicU64::new(1))
     }
 }
 

@@ -1,6 +1,7 @@
 mod generated;
 
 use crate::enums_clientserver::EMsg;
+use crate::steammessages_clientserver_appinfo::CMsgClientPICSProductInfoResponse;
 pub use generated::*;
 use std::fmt::Debug;
 use std::io::{Read, Write};
@@ -38,4 +39,14 @@ impl RpcMessage for () {
 
 pub trait RpcMessageWithKind: RpcMessage {
     const KIND: EMsg;
+}
+
+pub trait JobMultiple {
+    fn completed(&self) -> bool;
+}
+
+impl JobMultiple for CMsgClientPICSProductInfoResponse {
+    fn completed(&self) -> bool {
+        self.response_pending.unwrap_or(true)
+    }
 }
