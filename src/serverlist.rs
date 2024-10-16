@@ -158,8 +158,7 @@ struct ServerListResponseInner {
 pub struct Server {
     endpoint: String,
     legacy_endpoint: String,
-    #[serde(rename = "type")]
-    type_: String,
+    r#type: String,
     dc: String,
     realm: String,
     load: u32,
