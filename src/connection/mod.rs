@@ -5,7 +5,6 @@ use crate::message::{NetMessage, ServiceMethodMessage, ServiceMethodResponseMess
 use crate::net::{NetMessageHeader, NetworkError, RawNetMessage};
 use crate::proto::enums_clientserver::EMsg;
 use crate::proto::steammessages_clientserver_login::CMsgClientHeartBeat;
-use crate::serverlist::ServerList;
 use crate::service_method::ServiceMethodRequest;
 use crate::session::{anonymous, hello, login, ConnectionError, Session};
 use crate::transport::websocket::connect;
@@ -66,8 +65,8 @@ impl Debug for Connection {
 }
 
 impl Connection {
-    async fn connect(server_list: ServerList) -> Result<Self, ConnectionError> {
-        let (read, write) = connect(&server_list.pick_ws()).await?;
+    async fn connect(server: &str) -> Result<Self, ConnectionError> {
+        let (read, write) = connect(&server).await?;
         let filter = MessageFilter::new(read);
         let heartbeat_cancellation_token = CancellationToken::new();
         let mut connection = Connection {
@@ -85,16 +84,16 @@ impl Connection {
         Ok(connection)
     }
 
-    pub async fn anonymous(server_list: ServerList) -> Result<Self, ConnectionError> {
-        let mut connection = Self::connect(server_list).await?;
+    pub async fn anonymous(server: String) -> Result<Self, ConnectionError> {
+        let mut connection = Self::connect(&server).await?;
         connection.session = anonymous(&mut connection, AccountType::AnonUser).await?;
         connection.setup_heartbeat();
 
         Ok(connection)
     }
 
-    pub async fn anonymous_server(server_list: ServerList) -> Result<Self, ConnectionError> {
-        let mut connection = Self::connect(server_list).await?;
+    pub async fn anonymous_server(server: String) -> Result<Self, ConnectionError> {
+        let mut connection = Self::connect(&server).await?;
         connection.session = anonymous(&mut connection, AccountType::AnonGameServer).await?;
         connection.setup_heartbeat();
 
@@ -102,13 +101,13 @@ impl Connection {
     }
 
     pub async fn login<H: AuthConfirmationHandler, G: GuardDataStore>(
-        server_list: ServerList,
+        server: String,
         account: &str,
         password: &str,
         mut guard_data_store: G,
         confirmation_handler: H,
     ) -> Result<Self, ConnectionError> {
-        let mut connection = Self::connect(server_list).await?;
+        let mut connection = Self::connect(&server).await?;
         let guard_data = guard_data_store.load(account).await.unwrap_or_else(|e| {
             error!(error = ?e, "failed to retrieve guard data");
             None
